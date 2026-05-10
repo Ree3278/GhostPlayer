@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 import pandas as pd
 
@@ -33,16 +34,28 @@ def load_tracking_files(data_dir: Path) -> pd.DataFrame:
 
     tracking_paths = sorted(data_dir.glob("tracking_week_*.csv"))
     if not tracking_paths:
+        tracking_paths = sorted(data_dir.glob("tracking*.csv"))
+
+    if not tracking_paths:
         fallback = data_dir / RAW_FILE_NAMES["tracking"]
         if fallback.exists():
             tracking_paths = [fallback]
 
     if not tracking_paths:
         raise FileNotFoundError(
-            "No tracking CSVs found. Expected files named 'tracking_week_*.csv' or 'tracking.csv'."
+            "No tracking CSVs found. Expected files named 'tracking_week_*.csv', "
+            "'tracking*.csv', or 'tracking.csv'."
         )
 
-    tracking_frames = [pd.read_csv(path) for path in tracking_paths]
+    tracking_frames = []
+    for path in tracking_paths:
+        frame = pd.read_csv(path)
+        frame["sourceFile"] = path.name
+        week_match = re.search(r"week[_-]?(\d+)", path.stem)
+        if week_match:
+            frame["sourceWeek"] = int(week_match.group(1))
+        tracking_frames.append(frame)
+
     return pd.concat(tracking_frames, ignore_index=True)
 
 

@@ -57,3 +57,28 @@ def per_play_average_displacement_error(
 
     masked_errors = np.where(defender_mask, errors, np.nan)
     return np.nanmean(masked_errors, axis=1)
+
+
+def masked_error_summary(
+    predicted: np.ndarray,
+    actual: np.ndarray,
+    mask: np.ndarray,
+) -> dict[str, float | int]:
+    """Return common summary statistics over masked coordinate errors."""
+
+    errors = displacement_errors(predicted, actual)
+    if mask.shape != errors.shape:
+        raise ValueError(f"mask shape must match error shape, got {mask.shape} and {errors.shape}.")
+
+    selected = errors[mask]
+    if selected.size == 0:
+        raise ValueError("Cannot summarize zero masked predictions.")
+
+    return {
+        "count": int(selected.size),
+        "ade": float(selected.mean()),
+        "median_error": float(np.median(selected)),
+        "p90_error": float(np.percentile(selected, 90)),
+        "p95_error": float(np.percentile(selected, 95)),
+        "max_error": float(selected.max()),
+    }
