@@ -265,7 +265,7 @@ def _materialize_window(
             if node.node_type == "ball":
                 if ball_row is None:
                     continue
-                history[time_index, node.node_index, :] = ball_row.loc[CONTINUOUS_FEATURE_COLUMNS].to_numpy(
+                history[time_index, node.node_index, :] = ball_row.loc[list(CONTINUOUS_FEATURE_COLUMNS)].to_numpy(
                     dtype=np.float32
                 )
                 ball_active[time_index, node.node_index] = 1.0
