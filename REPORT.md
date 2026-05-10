@@ -1,22 +1,22 @@
-# GhostPlayer: Full-Trajectory Player Movement Prediction in NFL Passing Plays
+# GhostPlayer: Predicting Full Player Trajectories in NFL Passing Plays
 
 ## 1. Project Description and Motivation
 
-GhostPlayer is a supervised learning system for modeling expected player movement during NFL passing plays. Given a short pre-throw tracking window, the system predicts a future trajectory for each player marked by the dataset as `player_to_predict`. The predicted trajectory is treated as a “Ghost” path: an estimate of where the player would likely move under league-observed pass-play behavior. Comparing the actual path with the Ghost path gives an interpretable movement-deviation signal.
+For this project, I built **GhostPlayer**, a model that predicts where NFL players are expected to move during passing plays. The idea is simple: given the last few frames before the future play segment, the model draws a “ghost” path for each target player. We can then compare the real player path to the predicted Ghost path.
 
-The motivation is football analytics. Coaches and analysts often want to understand whether a receiver, defender, or route runner moved in a typical way for the play context. A single end-point prediction is useful, but a full path is more informative because pass-play decisions unfold continuously. A receiver may separate early then converge late; a defender may take the correct initial leverage but fail after a route break; a passer or route-runner context may change the expected path. A trajectory-level Ghost model can visualize these differences as paths rather than isolated dots.
+This is useful because football movement is hard to judge from one still frame. A receiver might look covered at the catch point but may have created separation earlier. A defender might start in a good position but lose leverage after a route break. A model that predicts a full path can show these differences better than a single predicted dot.
 
-This project should not be interpreted as an “optimal football strategy” engine. It is an imitation-learning model trained on observed NFL tracking data. It learns likely movement patterns from historical examples, not counterfactual optimal movement. That distinction matters for both technical interpretation and ethical use: the model can surface unusual movement relative to the data distribution, but it does not prove that a player made a mistake.
+The goal is **not** to say what the player “should” have done in a perfect football sense. The model is not reading the playbook, and it does not know the coach’s exact assignment. Instead, this is an imitation learning problem: the model learns movement patterns from real NFL data and predicts what movement looks likely based on similar historical situations.
 
 ## 2. Data and Learning Problem
 
-The project uses the NFL Big Data Bowl 2026 Analytics dataset stored locally under:
+The project uses the NFL Big Data Bowl 2026 Analytics dataset. The local files are stored at:
 
 ```text
 data/114239_nfl_competition_files_published_analytics_final/
 ```
 
-The main files are:
+The important files are:
 
 ```text
 supplementary_data.csv
@@ -24,30 +24,32 @@ train/input_2023_w*.csv
 train/output_2023_w*.csv
 ```
 
-The 2026 dataset differs from a full player-tracking dataset. It does not provide all 22 players plus the ball for every play. Instead, each play contains a focused player subset relevant to a pass play. The input files contain pre-output tracking context for selected offensive and defensive players. The output files contain future `(x, y)` labels only for players marked `player_to_predict`. Therefore, the learning problem is not “predict all 11 defenders.” The correct formulation is:
+One important thing I had to adjust for is that the 2026 dataset is not a full 22-player tracking dataset. It gives a focused subset of players around the passing play. The input files contain the past/context frames, and the output files contain future `(x, y)` labels only for players marked as `player_to_predict`.
+
+So the learning problem is:
 
 ```text
-Input X: 10 historical frames of selected pass-play context
-Label Y: future x/y trajectory for player_to_predict nodes
-Learn f_theta: X -> Y
+Input: 10 past tracking frames for selected players in a pass play
+Output: future x/y trajectory for player_to_predict nodes
+Learn: f_theta(X) -> Y
 ```
 
-After preprocessing, each example is represented as a fixed 23-node graph:
+Each play is converted into a fixed graph with 23 nodes:
 
-- Up to 22 player-context nodes from the 2026 files.
-- One ball-landing context node containing `ball_land_x` and `ball_land_y`.
-- Zero padding for absent nodes.
-- A prediction mask indicating which player nodes have supervised trajectory labels.
+- Up to 22 player-context nodes.
+- One ball-landing node using `ball_land_x` and `ball_land_y`.
+- Padding when fewer than 22 player-context nodes exist.
+- A mask that says which nodes should count toward the loss.
 
-Each player node has six continuous tracking features across the 10-frame history:
+Each player node uses these continuous features from the previous 10 frames:
 
 ```text
 x, y, s, a, o, dir
 ```
 
-The model also receives categorical embeddings for `player_position` and team type derived from `player_side` (`Offense`, `Defense`, or `Ball landing`). Field orientation is normalized so all plays are represented left-to-right. This is important because otherwise the model would need to learn separate mirrored movement patterns for left-moving and right-moving plays.
+I also added categorical information through embeddings, including player position and team type. I normalized field direction so every play is represented as moving left-to-right. Without this step, the model would need to learn the same football pattern twice, once in each direction.
 
-The processed split sizes are:
+The processed dataset sizes are:
 
 | Split | Examples |
 |---|---:|
@@ -55,7 +57,7 @@ The processed split sizes are:
 | Validation | 2,187 |
 | Test | 2,181 |
 
-Each example has shape:
+The final graph tensors look like this:
 
 ```text
 history_continuous: (10 frames, 23 nodes, 6 features)
@@ -63,46 +65,54 @@ target_trajectories: (94 future frames, 23 nodes, 2 coordinates)
 target_trajectory_mask: (94 future frames, 23 nodes)
 ```
 
-Although the model outputs 94 future frames for every example, not every play has actual labels for all 94 frames. The mask records which future labels exist. Evaluation is computed only where actual labels exist. The dashboard still displays unscored Ghost forecasts beyond the last available actual frame, but these should be interpreted as unverified model forecasts rather than measured accuracy.
+The model predicts 94 future frames, but not every play has actual labels for all 94 frames. This is why the mask is important. We only score the model where actual future labels exist. In the dashboard, I still show the model’s forecast beyond the actual labels, but those parts are shown as unscored forecasts.
 
-Important data quality and preprocessing issues include:
+Some data issues that mattered:
 
-- Variable number of context players per play, handled by fixed-size padding.
-- Variable future-label length, handled by a trajectory mask.
-- Missing labels for non-target context players, handled by excluding them from the loss.
-- Game-level splitting to reduce leakage across train, validation, and test sets.
-- Reuse of the legacy field name `defender_mask` in code, which semantically now means `player_to_predict`.
+- Plays have different numbers of context players.
+- Future labels have different lengths depending on the play.
+- Only `player_to_predict` nodes have labels, not every context player.
+- Splitting must happen by `game_id` to avoid leakage.
+- The code still uses the old name `defender_mask`, but in this version it really means `player_to_predict` mask.
 
 ## 3. Methodology
 
-The project compares a simple baseline model with a spatio-temporal graph neural network. The baseline predicts one target player at a time using only that player’s flattened 10-frame feature history. It does not see teammate, opponent, role, or ball-landing context. This provides a useful lower bound: if the graph model cannot beat this baseline, the relational architecture is not adding practical value.
+I used two main models: a simple baseline and a graph neural network.
 
-The advanced model is a Spatio-Temporal Graph Attention Network (ST-GAT). It is designed for the structure of the problem: football tracking is both spatial and temporal. Spatially, each player’s expected movement depends on nearby receivers, defenders, offensive/defensive side, route roles, and ball landing location. Temporally, the previous 10 frames define the player’s recent direction, speed trend, and route phase. A flat MLP loses most of this relational structure.
+The baseline is an MLP that predicts one target player at a time. It only sees that player’s own 10-frame history. This is useful because it tells us how much performance we can get without any relational context. If the graph model cannot beat this baseline, then the graph structure is not helping.
 
-For each frame, the model builds node features by concatenating:
+The main model is a **Spatio-Temporal Graph Attention Network (ST-GAT)**. This model fits the problem better because football movement depends on both space and time. Spatially, a player reacts to teammates, opponents, route roles, and ball location. Temporally, the last 10 frames tell us about speed, direction, and route development.
+
+The model works in three main stages:
+
+1. Build node features for each player and frame.
+2. Apply graph attention layers within each frame.
+3. Use a GRU over time to summarize the 10-frame history.
+
+For each frame, the model combines:
 
 ```text
-continuous tracking features
-ball/context active flag
+tracking features
+ball/context flag
 player-position embedding
 team-type embedding
 ```
 
-The node features are projected into a hidden representation and passed through dense multi-head graph attention layers. The graph is fully connected within each frame, allowing every node to attend to every other node. The attention layer follows the central idea of Graph Attention Networks: instead of assigning a fixed weight to each neighbor, the model learns attention weights based on node features, making the relational aggregation adaptive to the play context [1].
+Then the model applies dense multi-head graph attention. I used graph attention because every play has a different relationship structure. A defender might need to pay attention to a receiver on one play, but to a different route runner or ball-landing point on another. Graph attention lets the model learn these weights instead of using fixed neighbor weights [1].
 
-After spatial encoding, each node’s 10 framewise embeddings are passed through a GRU temporal encoder. GRUs are appropriate here because they are lightweight recurrent units designed to model sequential dependencies with gating [2]. The final hidden state for each node is passed through an output head that predicts:
+After the graph attention layers, each node has a sequence of 10 embeddings. A GRU processes this sequence and creates a final hidden state for each node [2]. The output head then predicts:
 
 ```text
 94 future frames x 2 coordinates
 ```
 
-The full-trajectory model is a direct multi-horizon predictor. It does not autoregressively roll forward one frame at a time. This is important because future output files contain only future `(x, y)` labels, not full future rows with `s`, `a`, `o`, `dir`, and all context-player states. A repeated one-step simulator would need to invent those missing future features. Direct multi-horizon prediction instead learns:
+One design choice I made was to predict the whole future trajectory directly instead of repeatedly predicting one frame at a time. Repeated one-step prediction sounds natural, but it is not a clean fit for this dataset. The future output files only give future `(x, y)` labels. They do not give future speed, acceleration, orientation, direction, or future context-player states. To roll the model forward step by step, we would need to invent all of those missing features. Direct trajectory prediction avoids that problem:
 
 ```text
-10-frame context -> complete future x/y path
+10-frame context -> full future x/y path
 ```
 
-The objective is masked coordinate regression. Let `M_i` be the binary mask over valid target-player future labels. The empirical objective is:
+The loss is masked coordinate regression. In words, the model only gets penalized for valid future labels on `player_to_predict` nodes. The objective is:
 
 ```math
 \min_{\theta}
@@ -113,28 +123,32 @@ The objective is masked coordinate regression. Let `M_i` be the binary mask over
 + \lambda \|\theta\|_2^2
 ```
 
-The loss `L` is masked squared Euclidean coordinate error. ADE is used for reporting because it is measured in yards and is easier to interpret. The optimizer is AdamW, an Adam-style adaptive first-order optimizer with decoupled weight decay. Adam is suitable for noisy minibatch objectives and large neural networks because it adapts learning rates using gradient moment estimates [3]. Regularization includes dropout in the GAT/input/output layers, weight decay, validation-based checkpoint selection, and gradient clipping. ReLU activations are used in hidden projections and the output MLP because they are simple, computationally efficient, and avoid the saturation behavior of sigmoid-like nonlinearities.
+Here, `M_i` is the mask of valid target-player labels. I used masked MSE for training and Average Displacement Error (ADE) for reporting because ADE is measured in yards and is easier to understand.
 
-The advanced part of this methodology is the combination of graph attention with direct full-horizon trajectory forecasting. The graph attention component is appropriate because football movement is relational and the important neighbors vary by play. The direct multi-horizon head is appropriate because the dataset provides future positions but not the full future state required for clean autoregressive simulation.
+For optimization, I used AdamW. Adam-style optimization works well for neural networks because it adapts learning rates based on gradient statistics [3]. AdamW also gives weight decay in a cleaner way. For regularization, I used dropout, weight decay, validation checkpointing, and gradient clipping. Hidden layers use ReLU activations.
+
+The advanced part of the project is the combination of **graph attention** and **direct multi-horizon trajectory prediction**. Graph attention handles relational football context, and the direct trajectory head lets the model output a full Ghost path instead of just one future point.
 
 ## 4. Results and Discussion
 
-The legacy one-frame evaluation compares the baseline against the previous single-frame ST-GAT checkpoint on the same held-out test split:
+First, I evaluated the earlier one-frame model against the baseline. This compares both models on the first future frame only:
 
 | Model | Count | ADE | Median Error | P90 | P95 | Max Error |
 |---|---:|---:|---:|---:|---:|---:|
 | Baseline MLP | 7,192 | 2.347 | 2.122 | 3.811 | 4.721 | 17.959 |
 | ST-GAT, frame 1 | 7,192 | 1.403 | 1.203 | 2.604 | 3.157 | 9.078 |
 
-The one-frame ST-GAT improves ADE by about 0.945 yards on average and beats the baseline on 86.5% of held-out plays. This supports the core hypothesis that relational context improves prediction over a player-only baseline.
+The graph model clearly improves over the baseline. It lowers ADE by about 0.945 yards and wins on 86.5% of held-out plays. This suggests that relational context is actually useful for this task.
 
-The current trajectory model is evaluated over all available future labels:
+Then I evaluated the full-trajectory model:
 
 | Model | Count | Full-Trajectory ADE | Median Error | P90 | P95 | Max Error |
 |---|---:|---:|---:|---:|---:|---:|
 | ST-GAT trajectory | 88,144 | 2.238 | 1.823 | 4.211 | 5.376 | 24.161 |
 
-The trajectory model’s best validation ADE is 2.218 yards. On test data, full-horizon ADE is 2.238 yards, which is close to validation and does not suggest a severe validation-test gap. Errors grow as the forecast horizon increases, which is expected because uncertainty increases farther into the future and because later frames have fewer labeled examples. Selected horizon-level results:
+The best validation ADE for the trajectory model was 2.218 yards, and the test ADE was 2.238 yards. These numbers are close, which is a good sign that the model is not obviously failing on the test split.
+
+The error increases farther into the future, which makes sense. The longer we predict, the more uncertainty there is. Also, there are fewer actual labels at later future frames, so late-frame metrics are based on fewer examples.
 
 | Output Frame | Label Count | ADE |
 |---:|---:|---:|
@@ -144,31 +158,41 @@ The trajectory model’s best validation ADE is 2.218 yards. On test data, full-
 | 15 | 1,768 | 3.319 |
 | 19 | 943 | 4.050 |
 
-The trajectory model’s frame-1 ADE is worse than the separate one-frame ST-GAT checkpoint. This is not surprising: the trajectory model optimizes a harder 94-frame objective, so it distributes capacity across many future horizons rather than specializing only on the first output frame. The practical gain is that it produces a complete Ghost path, which is more useful for visual analysis.
+One interesting result is that the trajectory model’s frame-1 ADE is worse than the separate one-frame ST-GAT checkpoint. This is not too surprising because the trajectory model has a harder job. It is trained to predict many future frames, not just the first one. The tradeoff is that it gives us a full Ghost path, which is more useful for visualization and analysis.
 
-The current dashboard supports this interpretation. It shows actual paths, scored Ghost paths where labels exist, and unscored Ghost forecasts beyond the actual label horizon. This is an important presentation choice: it makes clear which predictions are evaluated and which are extrapolations.
+The Streamlit dashboard makes this easier to understand. It shows:
 
-Training and validation loss curves are the main missing artifact in the current report draft. The training script prints epoch metrics and stores the best validation ADE in the checkpoint, but it does not yet persist a full epoch history. For the final report, the training script should be rerun with CSV logging enabled, or stdout should be saved, so the report can include curves of training loss and validation ADE. Based on the saved endpoint metrics, the model does not appear to catastrophically overfit, but a curve is needed to diagnose whether training has plateaued, whether the model is underfitting early horizons, or whether late-horizon labels cause high-variance validation behavior.
+- Actual target-player path in black.
+- Scored Ghost path in cyan.
+- Unscored future forecast as a lighter dotted cyan line.
+- Error over future frames.
+- A frame scrubber and full animation.
+
+This helped me catch an important visualization issue: at first, the app stopped the Ghost path when the actual labels stopped. But the model still predicts all 94 frames. I changed the app so the Ghost forecast can continue past the labeled frames, while clearly marking that part as unscored.
+
+One thing still missing from the current report is a proper training/validation curve. The training script prints epoch metrics and saves the best validation ADE, but it does not yet save a CSV history. For the final version, I would either rerun training with logging or save stdout so I can plot training loss and validation ADE over time. Based on the validation/test numbers, the model does not look severely overfit, but the curve would make that diagnosis stronger.
 
 ## 5. Safety, Security, and Ethics
 
-If deployed at large scale by a team, broadcaster, betting company, or league partner, GhostPlayer would raise several concerns.
+If this type of model were used by a team, broadcaster, or betting company, it would need to be used carefully.
 
-First, the model can be misinterpreted as a measure of player quality or effort. A large deviation from the Ghost path does not automatically mean the player made an error. The actual player may have had an assignment not visible in the features, reacted to a subtle cue, improvised correctly, or been affected by physical contact. The model learns historical averages, not the playbook or the coach’s intent. Any deployment should present predictions as descriptive analytics, not definitive grading.
+The biggest issue is interpretation. A player being far from the Ghost path does not automatically mean the player made a mistake. The model does not know the exact play call, assignment, coaching instruction, or communication on the field. A player might move differently from the Ghost because they saw something the model cannot see.
 
-Second, the dataset is incomplete for full tactical interpretation. The 2026 files contain a selected player subset, not full 22-player tracking for every play. The model may miss off-screen or excluded context that explains a target player’s movement. It also predicts only future `(x, y)`, not body orientation, acceleration, or decision intent. This limits its suitability for automated personnel decisions.
+There are also fairness concerns. Players in different schemes or roles may naturally move differently. If the model is used for player evaluation, it could accidentally punish players for being in unusual systems or assignments. For this reason, I would not use this model as a direct grading tool without much more context and validation.
 
-Third, there is potential labor and fairness risk. If used in scouting, contract negotiation, or player evaluation, the model could reinforce historical biases in the data. For example, players in different schemes, roles, or coverage responsibilities may be penalized because their movement differs from the learned league distribution. Analysts should stratify results by position, role, route, coverage, and team context before drawing player-level conclusions.
+The dataset also limits what the model can claim. Since the 2026 data only includes selected player subsets, the model may miss important off-screen or excluded context. It predicts future `(x, y)` positions, but not intent, body control, or assignment correctness.
 
-Fourth, there are security and integrity concerns. A model like this could become valuable competitive intelligence. If used by a team, access to trained checkpoints, processed tracking data, and dashboard outputs should be controlled. Model outputs should not be exposed in a way that leaks proprietary strategy or player tendencies.
+There are also security concerns. A system like this could reveal competitive insights if used by a team. The model checkpoints, processed data, and dashboard outputs should be protected if used in a real football organization.
 
-Finally, uncertainty should be communicated clearly. Longer-horizon Ghost forecasts are less reliable, and forecasts beyond available labels are not scored. The dashboard’s separation between scored Ghost path and unverified forecast is therefore not just a design feature; it is an ethical requirement for preventing overclaiming.
+Finally, uncertainty needs to be shown clearly. Longer-horizon predictions are less reliable, and forecasts beyond available labels are not scored. This is why the dashboard separates scored Ghost paths from unscored forecasts. Without that separation, it would be easy to overclaim what the model actually proved.
 
 ## 6. Conclusion
 
-GhostPlayer demonstrates that relational, temporal modeling is useful for NFL pass-play movement prediction. The one-frame ST-GAT substantially outperforms a player-only baseline, suggesting that graph context matters. The upgraded trajectory model extends the system from single-point prediction to full future Ghost paths, making the output more interpretable and more aligned with football analysis workflows.
+GhostPlayer shows that graph-based context helps predict NFL pass-play movement. The one-frame ST-GAT beats the player-only baseline, and the trajectory version extends the idea from a single Ghost point to a full Ghost path.
 
-The current system is a strong research prototype, not a production grading tool. The main next steps are to persist training curves, add richer metadata-based error breakdowns, compare against a trajectory baseline, and calibrate uncertainty over future frames. With those additions, the project would provide a clearer scientific evaluation of when Ghost trajectories are reliable and where the dataset limits the claims.
+The current system is best viewed as a research prototype. It is useful for visual analysis and for studying movement deviations, but it is not a production player-grading system. The next improvements would be to save training curves, add more detailed error breakdowns by role and position, compare against a trajectory baseline, and add uncertainty estimates for long-horizon forecasts.
+
+Overall, the project supports the main idea: football movement is relational and temporal, so a spatio-temporal graph model is a reasonable approach for predicting expected player trajectories.
 
 ## References
 
