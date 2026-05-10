@@ -10,3 +10,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Project data artifacts
+data/
+processed/
