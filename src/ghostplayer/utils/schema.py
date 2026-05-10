@@ -35,6 +35,13 @@ REQUIRED_PLAYS_COLUMNS = (
     "playId",
 )
 
+REQUIRED_SEQUENCE_PLAY_COLUMNS = (
+    "gameId",
+    "playId",
+    "possessionTeam",
+    "defensiveTeam",
+)
+
 REQUIRED_TRACKING_COLUMNS = (
     "gameId",
     "playId",
@@ -45,6 +52,21 @@ REQUIRED_TRACKING_COLUMNS = (
     "y",
     "nflId",
 )
+
+CONTINUOUS_FEATURE_COLUMNS = (
+    "x",
+    "y",
+    "s",
+    "a",
+    "o",
+    "dir",
+)
+
+TEAM_TYPE_TO_ID = {
+    "offense": 0,
+    "defense": 1,
+    "ball": 2,
+}
 
 
 @dataclass(frozen=True, slots=True)

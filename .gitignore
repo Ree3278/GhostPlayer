@@ -12,5 +12,5 @@ wheels/
 .venv
 
 # Project data artifacts
-data/
-processed/
+/data/
+/processed/
